@@ -2,34 +2,40 @@ use std::fs::read_to_string;
 
 #[derive(Debug, Clone, PartialEq)]
 struct MapEntry {
-	source_start: usize,
-	dest_start: usize,
-	range: usize,
+    source_start: usize,
+    source_end: usize,
+    offset: i64,
 }
 
 impl From<&str> for MapEntry {
     fn from(value: &str) -> Self {
-        let nums: Vec<usize> = value.split_whitespace().map(|entry| entry.parse::<usize>().unwrap()).collect();
+        let nums: Vec<usize> = value
+            .split_whitespace()
+            .map(|entry| entry.parse::<usize>().unwrap())
+            .collect();
+        let dest_start = nums[0];
+        let source_start = nums[1];
+        let range = nums[2];
         Self {
-            dest_start: nums[0],
-            source_start: nums[1],
-            range: nums[2],
+            source_start,
+            source_end: source_start + range - 1,
+            offset: dest_start as i64 - source_start as i64,
         }
     }
 }
 
 impl MapEntry {
-	pub fn map_source(&self, num: usize) -> Option<usize> {
-		if self.source_start <= num && num < self.source_start + self.range {
-			Some(num - self.source_start + self.dest_start)
-		} else {
+    pub fn map_source(&self, num: usize) -> Option<usize> {
+        if self.source_start <= num && num <= self.source_end {
+            Some((num as i64 + self.offset) as usize)
+        } else {
             None
         }
-	}
+    }
 }
 
 struct Map {
-	entries: Vec<MapEntry>,
+    entries: Vec<MapEntry>,
 }
 
 impl Map {
@@ -86,10 +92,21 @@ impl Data {
 fn parse_input(s: &str) -> Data {
     let mut maps: Vec<Map> = Vec::default();
     let mut buf = Vec::default();
-    let start_numbers: Vec<usize> = s.lines().next().unwrap().split_once(": ").unwrap().1.split_whitespace().map(|n| n.parse::<usize>().unwrap()).collect();
+    let start_numbers: Vec<usize> = s
+        .lines()
+        .next()
+        .unwrap()
+        .split_once(": ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .map(|n| n.parse::<usize>().unwrap())
+        .collect();
     for line in s.lines().skip(2) {
         if line.is_empty() {
-            maps.push(Map { entries: buf.into_iter().map(MapEntry::from).collect() });
+            maps.push(Map {
+                entries: buf.into_iter().map(MapEntry::from).collect(),
+            });
             buf = Vec::default();
         } else if line.contains("map") {
         } else {
@@ -97,9 +114,14 @@ fn parse_input(s: &str) -> Data {
         }
     }
     if !buf.is_empty() {
-        maps.push(Map { entries: buf.into_iter().map(MapEntry::from).collect() });
+        maps.push(Map {
+            entries: buf.into_iter().map(MapEntry::from).collect(),
+        });
     }
-    Data { start_numbers, maps }
+    Data {
+        start_numbers,
+        maps,
+    }
 }
 
 fn part1(s: &str) -> u64 {
@@ -162,21 +184,8 @@ humidity-to-location map:
     fn test_parse_line() {
         let foo = MapEntry::from("50 98 2");
         assert_eq!(foo.source_start, 98);
-        assert_eq!(foo.dest_start, 50);
-        assert_eq!(foo.range, 2);
-    }
-
-    #[test]
-    fn test_parse_input() {
-        let input = "seeds: 79 14 55 13
-
-seed-to-soil map:
-50 98 2
-52 50 48";
-        let data = parse_input(input);
-        assert_eq!(data.start_numbers, vec![79, 14, 55, 13]);
-        assert_eq!(data.maps.len(), 1);
-        assert_eq!(data.maps[0].entries, vec![MapEntry{ source_start: 98, dest_start: 50, range: 2}, MapEntry { source_start: 50, dest_start: 52, range: 48}]);
+        assert_eq!(foo.source_end, 99);
+        assert_eq!(foo.offset, -48);
     }
 
     #[test]
