@@ -1,5 +1,8 @@
-use petgraph::prelude::*;
-use std::{collections::HashMap, fs::read_to_string};
+use std::{
+    cmp::{max, min},
+    collections::HashMap,
+    fs::read_to_string,
+};
 
 struct Pair<'a> {
     left: &'a str,
@@ -7,14 +10,14 @@ struct Pair<'a> {
 }
 
 struct Input<'a> {
-    instructions: &'a str,
+    instructions: Vec<bool>,
     map: HashMap<&'a str, Pair<'a>>,
 }
 
 impl<'a> From<&'a str> for Input<'a> {
     fn from(value: &'a str) -> Self {
         let mut iter = value.lines();
-        let instructions = iter.next().unwrap();
+        let instructions = iter.next().unwrap().chars().map(|c| c == 'L').collect();
         let mut map = HashMap::new();
         iter.next();
         for line in iter {
@@ -31,11 +34,11 @@ impl<'a> Input<'a> {
     pub fn follow_directions(&self) -> usize {
         let mut steps: usize = 0;
         let mut current = "AAA";
-        let mut step_iter = self.instructions.chars().cycle();
+        let mut step_iter = self.instructions.clone().into_iter().cycle();
         while current != "ZZZ" {
             let cur_char = step_iter.next().unwrap();
             let cur_pair = self.map.get(current).unwrap();
-            current = if cur_char == 'L' {
+            current = if cur_char {
                 cur_pair.left
             } else {
                 cur_pair.right
@@ -45,22 +48,17 @@ impl<'a> Input<'a> {
         steps
     }
 
-    pub fn follow_simul_directions(&self) -> usize {
-        let mut steps: usize = 0;
-        let mut all_current: Vec<&str> = self
-            .map
-            .keys()
-            .filter(|k| k.ends_with('A'))
-            .copied()
-            .collect();
-        let mut step_iter = self.instructions.chars().cycle();
-        while !all_current.iter().all(|k| k.ends_with('Z')) {
+    pub fn get_cycle_length(&self, start: &str) -> usize {
+        let mut steps = 0;
+        let mut current = start;
+        let mut step_iter = self.instructions.clone().into_iter().cycle();
+        while !current.ends_with('Z') {
             let cur_char = step_iter.next().unwrap();
-            let cur_pairs = all_current.iter().map(|k| self.map.get(*k).unwrap());
-            all_current = if cur_char == 'L' {
-                cur_pairs.map(|p| p.left).collect()
+            let cur_pair = self.map.get(current).unwrap();
+            current = if cur_char {
+                cur_pair.left
             } else {
-                cur_pairs.map(|p| p.right).collect()
+                cur_pair.right
             };
             steps += 1;
         }
@@ -68,12 +66,42 @@ impl<'a> Input<'a> {
     }
 }
 
+fn gcd(a: usize, b: usize) -> usize {
+    match ((a, b), (a & 1, b & 1)) {
+        ((x, y), _) if x == y => y,
+        ((0, x), _) | ((x, 0), _) => x,
+        ((x, y), (0, 1)) | ((y, x), (1, 0)) => gcd(x >> 1, y),
+        ((x, y), (0, 0)) => gcd(x >> 1, y >> 1) << 1,
+        ((x, y), (1, 1)) => {
+            let (x, y) = (min(x, y), max(x, y));
+            gcd((y - x) >> 1, x)
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn lcm_all(input: &[usize]) -> usize {
+    if input.len() == 1 {
+        return input[0];
+    }
+    let a = input[0];
+    let b = lcm_all(&input[1..]);
+    a * b / gcd(a, b)
+}
+
 fn part1(s: &str) -> usize {
     Input::from(s).follow_directions()
 }
 
 fn part2(s: &str) -> usize {
-    Input::from(s).follow_simul_directions()
+    let input = Input::from(s);
+    let lengths: Vec<usize> = input
+        .map
+        .keys()
+        .filter(|k| k.ends_with('A'))
+        .map(|k| input.get_cycle_length(k))
+        .collect();
+    lcm_all(&lengths)
 }
 
 fn main() {
@@ -117,13 +145,13 @@ ZZZ = (ZZZ, ZZZ)";
         let actual = part2(
             "LR
 
-11A = (11B, XXX)
-11B = (XXX, 11Z)
-11Z = (11B, XXX)
-22A = (22B, XXX)
-22B = (22C, 22C)
-22C = (22Z, 22Z)
-22Z = (22B, 22B)
+AAA = (AAB, XXX)
+AAB = (XXX, AAZ)
+AAZ = (AAB, XXX)
+BBA = (BBB, XXX)
+BBB = (BBC, BBC)
+BBC = (BBZ, BBZ)
+BBZ = (BBB, BBB)
 XXX = (XXX, XXX)",
         );
         assert_eq!(actual, 6);
