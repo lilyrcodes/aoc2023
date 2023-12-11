@@ -48,50 +48,106 @@ fn get_start_pos(tiles: &[Vec<char>]) -> (usize, usize) {
     panic!()
 }
 
-fn part1(s: &str) -> usize {
-    let (width, height) = get_size(s);
-    let map = read_from_string(s);
-    let (x, y) = get_start_pos(&map);
-    let mut distance_map: Vec<Vec<usize>> = vec![vec![0; width]; height];
-    let mut queue: VecDeque<((usize, usize), usize)> = VecDeque::new();
-    let mut explored: HashSet<(usize, usize)> = HashSet::new();
-    queue.push_back(((x, y), 0));
-    while let Some(((x, y), dist)) = queue.pop_front() {
-        if explored.contains(&(x, y)) {
-            continue;
-        }
-        distance_map[y][x] = dist;
-        explored.insert((x, y));
-        for d in char_to_directions(map[y][x]) {
-            match d {
-                Direction::Up => {
-                    if y > 0 {
-                        queue.push_back(((x, y - 1), dist + 1));
-                    }
+fn add_to_explore_queue(
+    queue: &mut VecDeque<((usize, usize), usize, Direction)>,
+    valid_directions: &[Direction],
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    dist: usize,
+) {
+    for d in valid_directions {
+        match d {
+            Direction::Up => {
+                if y > 0 {
+                    queue.push_back(((x, y - 1), dist + 1, Direction::Down));
                 }
-                Direction::Down => {
-                    if y < height - 1 {
-                        queue.push_back(((x, y + 1), dist + 1));
-                    }
+            }
+            Direction::Down => {
+                if y < height - 1 {
+                    queue.push_back(((x, y + 1), dist + 1, Direction::Up));
                 }
-                Direction::Left => {
-                    if x > 0 {
-                        queue.push_back(((x - 1, y), dist + 1));
-                    }
+            }
+            Direction::Left => {
+                if x > 0 {
+                    queue.push_back(((x - 1, y), dist + 1, Direction::Right));
                 }
-                Direction::Right => {
-                    if x < width - 1 {
-                        queue.push_back(((x + 1, y), dist + 1));
-                    }
+            }
+            Direction::Right => {
+                if x < width - 1 {
+                    queue.push_back(((x + 1, y), dist + 1, Direction::Left));
                 }
             }
         }
     }
+}
+
+fn part1(s: &str) -> usize {
+    let (width, height) = get_size(s);
+    let map = read_from_string(s);
+    let mut distance_map: Vec<Vec<usize>> = vec![vec![0; width]; height];
+    let mut queue: VecDeque<((usize, usize), usize, Direction)> = VecDeque::new();
+    let mut explored: HashSet<(usize, usize)> = HashSet::new();
+    queue.push_back((get_start_pos(&map), 0, Direction::Up));
+    while let Some(((x, y), dist, incoming_dir)) = queue.pop_front() {
+        if explored.contains(&(x, y)) {
+            continue;
+        }
+        let valid_directions = char_to_directions(map[y][x]);
+        if !valid_directions.contains(&incoming_dir) {
+            continue;
+        }
+        distance_map[y][x] = dist;
+        explored.insert((x, y));
+        add_to_explore_queue(&mut queue, &valid_directions, x, y, width, height, dist);
+    }
     distance_map.into_iter().flatten().max().unwrap()
 }
 
-fn part2(s: &str) -> i64 {
-    todo!()
+fn part2(s: &str) -> usize {
+    let (width, height) = get_size(s);
+    let map = read_from_string(s);
+    let mut pipe_map: Vec<Vec<char>> = vec![vec!['.'; width]; height];
+    let mut queue: VecDeque<((usize, usize), usize, Direction)> = VecDeque::new();
+    let mut explored: HashSet<(usize, usize)> = HashSet::new();
+    let (start_x, start_y) = get_start_pos(&map);
+    queue.push_back(((start_x, start_y), 0, Direction::Up));
+    while let Some(((x, y), dist, incoming_dir)) = queue.pop_front() {
+        if explored.contains(&(x, y)) {
+            continue;
+        }
+        let valid_directions = char_to_directions(map[y][x]);
+        if !valid_directions.contains(&incoming_dir) {
+            continue;
+        }
+        pipe_map[y][x] = map[y][x];
+        explored.insert((x, y));
+        add_to_explore_queue(&mut queue, &valid_directions, x, y, width, height, dist);
+    }
+    for line in pipe_map.iter() {
+        println!("{}", line.iter().collect::<String>());
+    }
+    todo!("substitute start tile");
+    let mut tile_count = 0;
+    for (y, line) in pipe_map.into_iter().enumerate() {
+        let mut in_boundary = false;
+        let mut prev = '.';
+        for (x, ch) in line.into_iter().enumerate() {
+            match ch {
+                'F' | 'L' => in_boundary = true,
+                '|' => in_boundary = !in_boundary,
+                '7' | 'J' => in_boundary = false,
+                _ => {}
+            }
+            if in_boundary && ch == '.' {
+                tile_count += 1;
+                println!("({}, {})", x, y);
+            }
+            prev = ch;
+        }
+    }
+    tile_count
 }
 
 fn main() {
@@ -126,6 +182,34 @@ LJ...";
 SJLL7
 |F--J
 LJ.LJ";
+    const TEST_INPUT_5: &str = "...........
+.S-------7.
+.|F-----7|.
+.||.....||.
+.||.....||.
+.|L-7.F-J|.
+.|..|.|..|.
+.L--J.L--J.
+...........";
+    const TEST_INPUT_6: &str = "..........
+.S------7.
+.|F----7|.
+.||OOOO||.
+.||OOOO||.
+.|L-7F-J|.
+.|II||II|.
+.L--JL--J.
+..........";
+    const TEST_INPUT_7: &str = "FF7FSF7F7F7F7F7F---7
+L|LJ||||||||||||F--J
+FL-7LJLJ||||||LJL-77
+F--JF--7||LJLJ7F7FJ-
+L---JF-JLJ.||-FJLJJ7
+|F|F-JF---7F7-L7L|7|
+|FFJF7L7F-JF7|JL---7
+7-L-JL7||F7|L7F-7F7|
+L.L7LFJ|||||FJL7||LJ
+L7JLJL-JLJLJL--JLJ.L";
 
     #[test]
     fn test_part1() {
@@ -135,10 +219,12 @@ LJ.LJ";
         assert_eq!(part1(TEST_INPUT_4), 8);
     }
 
-    /*
     #[test]
     fn test_part2() {
-        assert_eq!(TEST_INPUT_2, 2);
+        assert_eq!(part2(TEST_INPUT_1), 1);
+        assert_eq!(part2(TEST_INPUT_2), 1);
+        assert_eq!(part2(TEST_INPUT_5), 4);
+        assert_eq!(part2(TEST_INPUT_6), 4);
+        assert_eq!(part2(TEST_INPUT_7), 10);
     }
-    */
 }
