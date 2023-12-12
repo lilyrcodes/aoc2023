@@ -105,6 +105,29 @@ fn part1(s: &str) -> usize {
     distance_map.into_iter().flatten().max().unwrap()
 }
 
+fn get_start_character(map: &[Vec<char>], x: usize, y: usize) -> char {
+    let has_left = x > 0 && "-FL".contains(map[y][x - 1]);
+    let has_up = y > 0 && "|F7".contains(map[y - 1][x]);
+    let has_down = y < map.len() - 1 && "|JL".contains(map[y + 1][x]);
+    if has_up {
+        if has_down {
+            '|'
+        } else if has_left {
+            'J'
+        } else {
+            'L'
+        }
+    } else if has_down {
+        if has_left {
+            '7'
+        } else {
+            'F'
+        }
+    } else {
+        '-'
+    }
+}
+
 fn part2(s: &str) -> usize {
     let (width, height) = get_size(s);
     let map = read_from_string(s);
@@ -125,26 +148,34 @@ fn part2(s: &str) -> usize {
         explored.insert((x, y));
         add_to_explore_queue(&mut queue, &valid_directions, x, y, width, height, dist);
     }
+    pipe_map[start_y][start_x] = get_start_character(&pipe_map, start_x, start_y);
     for line in pipe_map.iter() {
         println!("{}", line.iter().collect::<String>());
     }
-    todo!("substitute start tile");
     let mut tile_count = 0;
     for (y, line) in pipe_map.into_iter().enumerate() {
         let mut in_boundary = false;
-        let mut prev = '.';
+        let mut stack: Vec<char> = Vec::default();
         for (x, ch) in line.into_iter().enumerate() {
             match ch {
-                'F' | 'L' => in_boundary = true,
                 '|' => in_boundary = !in_boundary,
-                '7' | 'J' => in_boundary = false,
+                'F' | 'L' => stack.push(ch),
+                'J' => {
+                    if stack.pop().unwrap() != 'L' {
+                        in_boundary = !in_boundary;
+                    }
+                }
+                '7' => {
+                    if stack.pop().unwrap() != 'F' {
+                        in_boundary = !in_boundary;
+                    }
+                }
                 _ => {}
             }
             if in_boundary && ch == '.' {
                 tile_count += 1;
                 println!("({}, {})", x, y);
             }
-            prev = ch;
         }
     }
     tile_count
