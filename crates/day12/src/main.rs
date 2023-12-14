@@ -59,7 +59,7 @@ fn get_counts_recursive(
         (Spring::Operational, Spring::Operational) => get_counts_recursive(
             map,
             Line {
-                springs: springs[1..].to_vec(),
+                springs: springs.into_iter().skip(1).collect(),
                 counts: target_counts,
             },
             Spring::Operational,
@@ -69,8 +69,8 @@ fn get_counts_recursive(
                 get_counts_recursive(
                     map,
                     Line {
-                        springs: springs[1..].to_vec(),
-                        counts: target_counts[1..].to_vec(),
+                        springs: springs.into_iter().skip(1).collect(),
+                        counts: target_counts.into_iter().skip(1).collect(),
                     },
                     Spring::Operational,
                 )
@@ -85,10 +85,10 @@ fn get_counts_recursive(
                 get_counts_recursive(
                     map,
                     Line {
-                        springs: springs[1..].to_vec(),
+                        springs: springs.into_iter().skip(1).collect(),
                         counts: Some(target_counts[0] - 1)
                             .into_iter()
-                            .chain(target_counts[1..].iter().copied())
+                            .chain(target_counts.into_iter().skip(1))
                             .collect::<Vec<usize>>(),
                     },
                     Spring::Damaged,
@@ -101,7 +101,7 @@ fn get_counts_recursive(
                 Line {
                     springs: Some(Spring::Damaged)
                         .into_iter()
-                        .chain(springs[1..].iter().copied())
+                        .chain(springs.iter().copied().skip(1))
                         .collect::<Vec<Spring>>(),
                     counts: target_counts.clone(),
                 },
@@ -111,7 +111,7 @@ fn get_counts_recursive(
                 Line {
                     springs: Some(Spring::Operational)
                         .into_iter()
-                        .chain(springs[1..].iter().copied())
+                        .chain(springs.into_iter().skip(1))
                         .collect::<Vec<Spring>>(),
                     counts: target_counts,
                 },
