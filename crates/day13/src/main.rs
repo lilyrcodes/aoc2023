@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::read_to_string};
+use std::fs::read_to_string;
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 enum Tile {
@@ -43,7 +43,7 @@ fn make_maps(s: &str) -> Vec<Map> {
 
 fn is_palindrome_at(r: &Row, idx: usize) -> bool {
     let (left, right) = r.split_at(idx);
-    left.iter().zip(right.iter().rev()).all(|(a, b)| a == b)
+    right.iter().zip(left.iter().rev()).all(|(a, b)| a == b)
 }
 
 fn find_possible_horiz_points(r: &Row) -> Vec<usize> {
@@ -57,23 +57,49 @@ fn find_possible_vert_points(m: &Map, idx: usize) -> Vec<usize> {
 }
 
 fn calc_map_points(m: Map) -> usize {
-    todo!()
+    let horiz_points = m
+        .iter()
+        .map(find_possible_horiz_points)
+        .fold::<Vec<usize>, _>(
+            (0..m.first().unwrap().len()).collect::<Vec<usize>>(),
+            |acc, val| {
+                acc.into_iter()
+                    .filter(|num| val.contains(num))
+                    .collect::<Vec<usize>>()
+            },
+        );
+    let vert_points = (0..m.first().unwrap().len())
+        .map(|idx| find_possible_vert_points(&m, idx))
+        .fold::<Vec<usize>, _>((0..m.len()).collect::<Vec<usize>>(), |acc, val| {
+            acc.into_iter()
+                .filter(|num| val.contains(num))
+                .collect::<Vec<usize>>()
+        });
+    if !horiz_points.is_empty() {
+        horiz_points[0]
+    } else {
+        vert_points[0] * 100
+    }
 }
 
 fn part1(s: &str) -> usize {
     make_maps(s).into_iter().map(calc_map_points).sum()
 }
 
+/*
 fn part2(s: &str) -> usize {
     todo!()
 }
+*/
 
 fn main() {
     let input = read_to_string("input.txt").unwrap();
     let answer1 = part1(&input);
     println!("Part 1: {}", answer1);
+    /*
     let answer2 = part2(&input);
     println!("Part 2: {}", answer2);
+    */
 }
 
 #[cfg(test)]
@@ -98,7 +124,11 @@ mod tests {
 
     #[test]
     fn test_part1() {
-        assert_eq!(part1(TEST_INPUT), 21);
+        assert_eq!(
+            find_possible_horiz_points(&make_row("#.##..##.")),
+            vec![5, 7]
+        );
+        assert_eq!(part1(TEST_INPUT), 405);
     }
 
     /*
