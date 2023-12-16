@@ -56,7 +56,11 @@ fn find_possible_vert_points(m: &Map, idx: usize) -> Vec<usize> {
     find_possible_horiz_points(&m.iter().map(|row| row[idx]).collect::<Row>())
 }
 
-fn calc_map_points(m: Map) -> usize {
+fn calc_map_points(
+    m: Map,
+    remove_horiz: Option<usize>,
+    remove_vert: Option<usize>,
+) -> Option<usize> {
     let horiz_points = m
         .iter()
         .map(find_possible_horiz_points)
@@ -67,39 +71,94 @@ fn calc_map_points(m: Map) -> usize {
                     .filter(|num| val.contains(num))
                     .collect::<Vec<usize>>()
             },
-        );
+        )
+        .into_iter()
+        .filter(|size| {
+            if let Some(remove_horiz) = remove_horiz {
+                *size != remove_horiz
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<usize>>();
     let vert_points = (0..m.first().unwrap().len())
         .map(|idx| find_possible_vert_points(&m, idx))
         .fold::<Vec<usize>, _>((0..m.len()).collect::<Vec<usize>>(), |acc, val| {
             acc.into_iter()
                 .filter(|num| val.contains(num))
                 .collect::<Vec<usize>>()
-        });
+        })
+        .into_iter()
+        .filter(|size| {
+            if let Some(remove_vert) = remove_vert {
+                *size != remove_vert
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<usize>>();
     if !horiz_points.is_empty() {
-        horiz_points[0]
+        horiz_points.first().copied()
     } else {
-        vert_points[0] * 100
+        vert_points.first().copied().map(|p| p * 100)
     }
 }
 
-fn part1(s: &str) -> usize {
-    make_maps(s).into_iter().map(calc_map_points).sum()
+fn get_map_variants(m: &Map) -> Vec<Map> {
+    let mut maps = vec![];
+    for y in 0..m.len() {
+        for x in 0..m[y].len() {
+            let mut map = m.clone();
+            map[y][x] = match m[y][x] {
+                Tile::Rock => Tile::Empty,
+                Tile::Empty => Tile::Rock,
+            };
+            maps.push(map);
+        }
+    }
+    maps
 }
 
-/*
-fn part2(s: &str) -> usize {
-    todo!()
+fn find_smudge_line(m: Map, original_line: usize) -> usize {
+    let remove_vert = if original_line >= 100 {
+        Some(original_line / 100)
+    } else {
+        None
+    };
+    let remove_horiz = if original_line < 100 {
+        Some(original_line)
+    } else {
+        None
+    };
+    for map in get_map_variants(&m) {
+        if let Some(points) = calc_map_points(map, remove_horiz, remove_vert) {
+            return points;
+        }
+    }
+    panic!("No match found!");
 }
-*/
+
+fn part1(s: &str) -> usize {
+    make_maps(s)
+        .into_iter()
+        .map(|map| calc_map_points(map, None, None).unwrap())
+        .sum()
+}
+
+fn part2(s: &str) -> usize {
+    make_maps(s)
+        .into_iter()
+        .map(|map| (map.clone(), calc_map_points(map, None, None).unwrap()))
+        .map(|(map, original_line)| find_smudge_line(map, original_line))
+        .sum()
+}
 
 fn main() {
     let input = read_to_string("input.txt").unwrap();
     let answer1 = part1(&input);
     println!("Part 1: {}", answer1);
-    /*
     let answer2 = part2(&input);
     println!("Part 2: {}", answer2);
-    */
 }
 
 #[cfg(test)]
@@ -131,10 +190,8 @@ mod tests {
         assert_eq!(part1(TEST_INPUT), 405);
     }
 
-    /*
     #[test]
     fn test_part2() {
-        assert_eq!(part2(TEST_INPUT), 525152);
+        assert_eq!(part2(TEST_INPUT), 400);
     }
-    */
 }
