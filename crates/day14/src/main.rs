@@ -1,6 +1,6 @@
 use std::fs::read_to_string;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tile {
     Empty,
     Flat,
@@ -18,6 +18,7 @@ impl From<char> for Tile {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Debug)]
 struct Map {
     rows: Vec<Vec<Tile>>,
 }
@@ -32,8 +33,42 @@ impl From<&str> for Map {
     }
 }
 
+impl Map {
+    fn tilt_north(&mut self) {
+        for x in 0..self.rows[0].len() {
+            for y in 0..self.rows.len() {
+                if self.rows[y][x] == Tile::Round {
+                    let mut new_y = y;
+                    for check_y in (0..y).rev() {
+                        if self.rows[check_y][x] == Tile::Empty {
+                            new_y = check_y;
+                        } else {
+                            break;
+                        }
+                    }
+                    if y != new_y {
+                        self.rows[new_y][x] = Tile::Round;
+                        self.rows[y][x] = Tile::Empty;
+                    }
+                }
+            }
+        }
+    }
+
+    fn compute_load(&self) -> usize {
+        self.rows
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(y, line)| (y + 1) * line.iter().filter(|t| **t == Tile::Round).count())
+            .sum()
+    }
+}
+
 fn part1(s: &str) -> usize {
-    todo!()
+    let mut map = Map::from(s);
+    map.tilt_north();
+    map.compute_load()
 }
 
 fn part2(s: &str) -> usize {
@@ -76,11 +111,17 @@ O..#.OO...
 
     #[test]
     fn test_part1() {
-        assert_eq!(part1(TEST_INPUT), 405);
+        let mut map = Map::from(TEST_INPUT);
+        map.tilt_north();
+        let expected = Map::from(ROLLED_NORTH);
+        assert_eq!(expected, map);
+        assert_eq!(part1(TEST_INPUT), 136);
     }
 
+    /*
     #[test]
     fn test_part2() {
         assert_eq!(part2(TEST_INPUT), 400);
     }
+    */
 }
