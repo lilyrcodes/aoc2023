@@ -8,3 +8,4 @@ authors = ["Lily Richards <lilymichellerichards@gmail.com>"]
 edition = "2021"
 
 [workspace.dependencies]
+priority-queue = "1.3.2"
