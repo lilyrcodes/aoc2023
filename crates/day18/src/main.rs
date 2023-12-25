@@ -1,8 +1,4 @@
-use std::{
-    fmt::Debug,
-    fs::read_to_string,
-    ops::{Add, AddAssign},
-};
+use std::{fmt::Debug, fs::read_to_string, ops::Add};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Direction {
@@ -115,6 +111,10 @@ impl Line {
     pub fn contains_x(&self, x: i64) -> bool {
         (self.start_x <= x && x <= self.end_x) || (self.end_x <= x && x <= self.start_x)
     }
+
+    pub fn contains_point(&self, x: i64, y: i64) -> bool {
+        self.contains_x(x) && self.contains_y(y)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -122,6 +122,47 @@ enum EntranceShape {
     Vert,
     Down,
     Up,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+struct Range {
+    start: i64,
+    end: i64,
+}
+
+impl Range {
+    pub fn new(start: i64, end: i64) -> Self {
+        Self { start, end }
+    }
+
+    pub fn overlaps(&self, other: &Range) -> bool {
+        (self.start <= other.start && other.start <= self.end)
+            || (self.start <= other.end && other.end <= self.end)
+            || (other.start <= self.start && self.start <= other.end)
+            || (other.start <= self.end && self.end <= other.end)
+    }
+}
+
+fn collapse_ranges(ranges: &mut [Range]) -> Vec<Range> {
+    if ranges.is_empty() {
+        return vec![];
+    }
+    let mut result = Vec::with_capacity(ranges.len());
+    ranges.sort();
+    let mut prev = ranges[0];
+    for range in ranges.iter().skip(1) {
+        if prev.overlaps(range) {
+            prev = Range {
+                start: i64::min(range.start, prev.start),
+                end: i64::max(range.end, prev.end),
+            };
+        } else {
+            result.push(prev);
+            prev = *range;
+        }
+    }
+    result.push(prev);
+    result
 }
 
 fn parse_instructions(s: &str) -> Vec<Instruction> {
@@ -172,79 +213,82 @@ fn get_bounds(lines: &[Line]) -> Line {
     }
 }
 
-fn get_rows_for_y(lines: &[Line], y: i64, bounds: &Line) -> [Vec<bool>; 3] {
-    let width = (bounds.start_x.abs_diff(bounds.end_x) + 3) as usize;
-    let mut generated_lines = [vec![false; width], vec![false; width], vec![false; width]];
+fn get_ranges_for_y(lines: &[Line], y: i64) -> [Vec<Range>; 3] {
+    let mut generated_ranges = [Vec::new(), Vec::new(), Vec::new()];
     for (idx, row) in [y - 1, y, y + 1].into_iter().enumerate() {
         for line in lines.iter().filter(|line| line.contains_y(row)) {
-            for x in i64::min(line.start_x, line.end_x)..=i64::max(line.start_x, line.end_x) {
-                generated_lines[idx][(x + bounds.start_x + 1) as usize] = true;
-            }
+            generated_ranges[idx].push(Range::new(
+                i64::min(line.start_x, line.end_x),
+                i64::max(line.start_x, line.end_x),
+            ));
         }
+        generated_ranges[idx] = collapse_ranges(&mut generated_ranges[idx]);
     }
-    generated_lines
+    generated_ranges
 }
 
-fn get_shape(grid: &[Vec<bool>], x: usize, y: usize) -> Option<EntranceShape> {
-    if !grid[y][x] {
+fn get_shape_from_lines(lines: &[Line], x: i64, y: i64) -> Option<EntranceShape> {
+    if !lines.iter().any(|line| line.contains_point(x, y)) {
         None
-    } else if grid[y - 1][x] {
-        if grid[y + 1][x] {
+    } else if lines.iter().any(|line| line.contains_point(x, y - 1)) {
+        if lines.iter().any(|line| line.contains_point(x, y + 1)) {
             Some(EntranceShape::Vert)
         } else {
             Some(EntranceShape::Up)
         }
-    } else if grid[y + 1][x] {
+    } else if lines.iter().any(|line| line.contains_point(x, y + 1)) {
         Some(EntranceShape::Down)
     } else {
         None
     }
 }
 
-fn fill_in(grid: &[Vec<bool>]) -> usize {
+fn fill_in_ranges(lines: &[Line], ranges: &[Vec<Range>], y: i64) -> usize {
     let mut filled_in: usize = 0;
-    let height = grid.len();
-    let width = grid[0].len();
-    for y in 1..height - 1 {
-        let mut entrance_shape: Option<EntranceShape> = None;
-        let mut in_shape = false;
-        for x in 1..width - 1 {
-            match entrance_shape {
-                Some(EntranceShape::Down) => match get_shape(grid, x, y) {
-                    Some(EntranceShape::Up) => {
-                        in_shape = !in_shape;
-                        entrance_shape = None;
-                    }
-                    Some(EntranceShape::Down) => entrance_shape = None,
-                    None => {}
-                    Some(EntranceShape::Vert) => {
-                        panic!("Should not get vert exit shape: ({}, {})", x, y)
-                    }
-                },
-                Some(EntranceShape::Up) => match get_shape(grid, x, y) {
-                    Some(EntranceShape::Down) => {
-                        in_shape = !in_shape;
-                        entrance_shape = None;
-                    }
-                    Some(EntranceShape::Up) => entrance_shape = None,
-                    None => {}
-                    Some(EntranceShape::Vert) => {
-                        panic!("Should not get vert exit shape: ({}, {})", x, y)
-                    }
-                },
-                None => match get_shape(grid, x, y) {
-                    Some(EntranceShape::Vert) => in_shape = !in_shape,
-                    shape => entrance_shape = shape,
-                },
-                Some(EntranceShape::Vert) => {
-                    panic!("Should not get vert entrance shape: ({}, {})", x, y)
-                }
-            }
-
-            if grid[y][x] || in_shape {
-                filled_in += 1;
+    let mut in_shape = false;
+    let mut prev_range: Option<Range> = None;
+    let lines = lines
+        .iter()
+        .filter(|line| line.contains_y(y))
+        .copied()
+        .collect::<Vec<Line>>();
+    for range in ranges[1].iter() {
+        if let Some(prev_range) = prev_range {
+            if in_shape {
+                filled_in += (range.start - prev_range.end - 1) as usize;
             }
         }
+        let entrance_shape = get_shape_from_lines(&lines, range.start, y);
+        match entrance_shape {
+            Some(EntranceShape::Down) => match get_shape_from_lines(&lines, range.end, y) {
+                Some(EntranceShape::Up) => {
+                    in_shape = !in_shape;
+                }
+                Some(EntranceShape::Down) => {}
+                None => {}
+                Some(EntranceShape::Vert) => {
+                    panic!("Should not get vert exit shape: ({}, {})", range.end, y)
+                }
+            },
+            Some(EntranceShape::Up) => match get_shape_from_lines(&lines, range.end, y) {
+                Some(EntranceShape::Down) => {
+                    in_shape = !in_shape;
+                }
+                Some(EntranceShape::Up) => {}
+                None => {}
+                Some(EntranceShape::Vert) => {
+                    panic!("Should not get vert exit shape: ({}, {})", range.end, y)
+                }
+            },
+            None => {
+                if let Some(EntranceShape::Vert) = get_shape_from_lines(&lines, range.end, y) {
+                    in_shape = !in_shape;
+                }
+            }
+            Some(EntranceShape::Vert) => in_shape = !in_shape,
+        }
+        filled_in += (range.end - range.start + 1) as usize;
+        prev_range = Some(*range);
     }
     filled_in
 }
@@ -255,8 +299,8 @@ fn part1(s: &str) -> usize {
     let bounds = get_bounds(&lines);
     let mut total = 0;
     for y in bounds.start_y..=bounds.end_y {
-        let rows = get_rows_for_y(&lines, y, &bounds);
-        total += fill_in(&rows);
+        let ranges = get_ranges_for_y(&lines, y);
+        total += fill_in_ranges(&lines, &ranges, y);
     }
     total
 }
@@ -266,13 +310,9 @@ fn part2(s: &str) -> usize {
     let lines = convert_to_lines(&instructions);
     let bounds = get_bounds(&lines);
     let mut total = 0;
-    let num_lines = bounds.end_y.abs_diff(bounds.start_y) + 1;
-    for (num, y) in (bounds.start_y..=bounds.end_y).enumerate() {
-        if num % 1000 == 999 {
-            println!("{} / {}", num + 1, num_lines);
-        }
-        let rows = get_rows_for_y(&lines, y, &bounds);
-        total += fill_in(&rows);
+    for y in bounds.start_y..=bounds.end_y {
+        let ranges = get_ranges_for_y(&lines, y);
+        total += fill_in_ranges(&lines, &ranges, y);
     }
     total
 }
