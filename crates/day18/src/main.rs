@@ -1,4 +1,8 @@
-use std::{fmt::Debug, fs::read_to_string};
+use std::{
+    fmt::Debug,
+    fs::read_to_string,
+    ops::{Add, AddAssign},
+};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Direction {
@@ -75,6 +79,44 @@ impl Instruction {
     }
 }
 
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+struct Line {
+    start_x: i64,
+    start_y: i64,
+    end_x: i64,
+    end_y: i64,
+}
+
+impl Add<&Instruction> for &Line {
+    type Output = Line;
+    fn add(self, rhs: &Instruction) -> Self::Output {
+        let start_x = self.end_x;
+        let start_y = self.end_y;
+        let (end_x, end_y) = match rhs.direction {
+            Direction::Up => (start_x, start_y - rhs.steps as i64),
+            Direction::Down => (start_x, start_y + rhs.steps as i64),
+            Direction::Left => (start_x - rhs.steps as i64, start_y),
+            Direction::Right => (start_x + rhs.steps as i64, start_y),
+        };
+        Self::Output {
+            start_x,
+            start_y,
+            end_x,
+            end_y,
+        }
+    }
+}
+
+impl Line {
+    pub fn contains_y(&self, y: i64) -> bool {
+        (self.start_y <= y && y <= self.end_y) || (self.end_y <= y && y <= self.start_y)
+    }
+
+    pub fn contains_x(&self, x: i64) -> bool {
+        (self.start_x <= x && x <= self.end_x) || (self.end_x <= x && x <= self.start_x)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EntranceShape {
     Vert,
@@ -90,70 +132,57 @@ fn parse_color_instructions(s: &str) -> Vec<Instruction> {
     s.lines().map(Instruction::from_color).collect()
 }
 
-fn get_max_width(instructions: &[Instruction]) -> usize {
-    instructions
+fn convert_to_lines(instructions: &[Instruction]) -> Vec<Line> {
+    let mut prev_line = Line::default();
+    let mut lines = Vec::with_capacity(instructions.len());
+    for instruction in instructions {
+        let line = &prev_line + instruction;
+        lines.push(line);
+        prev_line = line;
+    }
+    lines
+}
+
+fn get_bounds(lines: &[Line]) -> Line {
+    let start_x = lines
         .iter()
-        .filter_map(|i| {
-            if i.direction == Direction::Right || i.direction == Direction::Left {
-                Some(i.steps)
-            } else {
-                None
-            }
-        })
-        .sum::<usize>()
-        + 3
-}
-
-fn get_max_height(instructions: &[Instruction]) -> usize {
-    instructions
+        .map(|line| i64::min(line.start_x, line.end_x))
+        .min()
+        .unwrap();
+    let start_y = lines
         .iter()
-        .filter_map(|i| {
-            if i.direction == Direction::Down || i.direction == Direction::Up {
-                Some(i.steps)
-            } else {
-                None
+        .map(|line| i64::min(line.start_y, line.end_y))
+        .min()
+        .unwrap();
+    let end_x = lines
+        .iter()
+        .map(|line| i64::max(line.start_x, line.end_x))
+        .max()
+        .unwrap();
+    let end_y = lines
+        .iter()
+        .map(|line| i64::max(line.start_y, line.end_y))
+        .max()
+        .unwrap();
+    Line {
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+    }
+}
+
+fn get_rows_for_y(lines: &[Line], y: i64, bounds: &Line) -> [Vec<bool>; 3] {
+    let width = (bounds.start_x.abs_diff(bounds.end_x) + 3) as usize;
+    let mut generated_lines = [vec![false; width], vec![false; width], vec![false; width]];
+    for (idx, row) in [y - 1, y, y + 1].into_iter().enumerate() {
+        for line in lines.iter().filter(|line| line.contains_y(row)) {
+            for x in i64::min(line.start_x, line.end_x)..=i64::max(line.start_x, line.end_x) {
+                generated_lines[idx][(x + bounds.start_x + 1) as usize] = true;
             }
-        })
-        .sum::<usize>()
-        + 3
-}
-
-fn create_grid(instructions: &[Instruction]) -> Vec<Vec<bool>> {
-    let width = get_max_width(instructions);
-    let height = get_max_height(instructions);
-    (0..height).map(|_| vec![false; width]).collect()
-}
-
-fn apply_instruction(
-    start_x: usize,
-    start_y: usize,
-    grid: &mut [Vec<bool>],
-    instruction: &Instruction,
-) -> (usize, usize) {
-    let (end_x, end_y) = match instruction.direction {
-        Direction::Up => (start_x, start_y - instruction.steps),
-        Direction::Down => (start_x, start_y + instruction.steps),
-        Direction::Left => (start_x - instruction.steps, start_y),
-        Direction::Right => (start_x + instruction.steps, start_y),
-    };
-    let small_y = usize::min(start_y, end_y);
-    let big_y = usize::max(start_y, end_y);
-    let small_x = usize::min(start_x, end_x);
-    let big_x = usize::max(start_x, end_x);
-    for line in grid.iter_mut().take(big_y + 1).skip(small_y) {
-        for item in line.iter_mut().take(big_x + 1).skip(small_x) {
-            *item = true;
         }
     }
-    (end_x, end_y)
-}
-
-fn follow_instructions(grid: &mut [Vec<bool>], instructions: &[Instruction]) {
-    let mut x = grid[0].len() / 2;
-    let mut y = grid.len() / 2;
-    for instruction in instructions {
-        (x, y) = apply_instruction(x, y, grid, instruction);
-    }
+    generated_lines
 }
 
 fn get_shape(grid: &[Vec<bool>], x: usize, y: usize) -> Option<EntranceShape> {
@@ -222,16 +251,30 @@ fn fill_in(grid: &[Vec<bool>]) -> usize {
 
 fn part1(s: &str) -> usize {
     let instructions = parse_instructions(s);
-    let mut grid = create_grid(&instructions);
-    follow_instructions(&mut grid, &instructions);
-    fill_in(&grid)
+    let lines = convert_to_lines(&instructions);
+    let bounds = get_bounds(&lines);
+    let mut total = 0;
+    for y in bounds.start_y..=bounds.end_y {
+        let rows = get_rows_for_y(&lines, y, &bounds);
+        total += fill_in(&rows);
+    }
+    total
 }
 
 fn part2(s: &str) -> usize {
     let instructions = parse_color_instructions(s);
-    let mut grid = create_grid(&instructions);
-    follow_instructions(&mut grid, &instructions);
-    fill_in(&grid)
+    let lines = convert_to_lines(&instructions);
+    let bounds = get_bounds(&lines);
+    let mut total = 0;
+    let num_lines = bounds.end_y.abs_diff(bounds.start_y) + 1;
+    for (num, y) in (bounds.start_y..=bounds.end_y).enumerate() {
+        if num % 1000 == 999 {
+            println!("{} / {}", num + 1, num_lines);
+        }
+        let rows = get_rows_for_y(&lines, y, &bounds);
+        total += fill_in(&rows);
+    }
+    total
 }
 
 fn main() {
