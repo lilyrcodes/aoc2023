@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     fs::read_to_string,
     sync::{mpsc, Arc},
     thread,
@@ -78,12 +79,15 @@ impl Condition {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Rule {
+struct Rule<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
     condition: Option<Condition>,
-    target: Stage,
+    target: Stage<T>,
 }
 
-impl From<&str> for Rule {
+impl From<&str> for Rule<Arc<str>> {
     fn from(value: &str) -> Self {
         if let Some((left, right)) = value.split_once(':') {
             let condition = Some(Condition::from(left));
@@ -100,7 +104,10 @@ impl From<&str> for Rule {
     }
 }
 
-impl Rule {
+impl<T> Rule<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
     pub fn should_apply(&self, part: &Part) -> bool {
         if let Some(condition) = self.condition {
             condition.matches(part)
@@ -109,18 +116,21 @@ impl Rule {
         }
     }
 
-    pub fn get_stage(&self) -> Stage {
+    pub fn get_stage(&self) -> Stage<T> {
         self.target.clone()
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-struct Workflow {
+struct Workflow<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
     name: Arc<str>,
-    rules: Vec<Rule>,
+    rules: Vec<Rule<T>>,
 }
 
-impl From<&str> for Workflow {
+impl From<&str> for Workflow<Arc<str>> {
     fn from(value: &str) -> Self {
         let (name, rules) = value.split_once('{').unwrap();
         let rules = &rules[0..rules.len() - 1];
@@ -132,8 +142,11 @@ impl From<&str> for Workflow {
     }
 }
 
-impl Workflow {
-    pub fn get_next_stage(&self, part: &Part) -> Stage {
+impl<T> Workflow<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
+    pub fn get_next_stage(&self, part: &Part) -> Stage<T> {
         self.rules
             .iter()
             .find(|rule| rule.should_apply(part))
@@ -142,7 +155,7 @@ impl Workflow {
     }
 }
 
-type WorkflowMap = HashMap<Arc<str>, Workflow>;
+type WorkflowMap = HashMap<Arc<str>, Workflow<Arc<str>>>;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 struct Part {
@@ -177,13 +190,16 @@ impl Part {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum Stage {
+enum Stage<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
     Accept,
     Reject,
-    Workflow(Arc<str>),
+    Workflow(T),
 }
 
-impl From<&str> for Stage {
+impl From<&str> for Stage<Arc<str>> {
     fn from(value: &str) -> Self {
         match value {
             "A" => Self::Accept,
@@ -193,22 +209,60 @@ impl From<&str> for Stage {
     }
 }
 
-impl Default for Stage {
+impl Default for Stage<Arc<str>> {
     fn default() -> Self {
         Self::Workflow("in".into())
     }
 }
 
-impl Stage {
+impl<T> Stage<T>
+where
+    T: Clone + PartialEq + Eq + Debug,
+{
     pub fn accepted(&self) -> bool {
         *self == Self::Accept
     }
 }
 
-fn parse_workflows(s: &str) -> WorkflowMap {
+struct Input {
+    workflows: Vec<Workflow<usize>>,
+    parts: Vec<Part>,
+    starting_workflow: usize,
+}
+
+fn convert_to_idx(
+    workflows: Vec<Workflow<Arc<str>>>,
+    name_map: HashMap<Arc<str>, usize>,
+) -> Vec<Workflow<usize>> {
+    workflows
+        .into_iter()
+        .map(|wf| Workflow {
+            name: wf.name,
+            rules: wf
+                .rules
+                .into_iter()
+                .map(|rule| Rule {
+                    condition: rule.condition,
+                    target: match rule.target {
+                        Stage::Workflow(name) => Stage::Workflow(*name_map.get(&name).unwrap()),
+                        Stage::Accept => Stage::Accept,
+                        Stage::Reject => Stage::Reject,
+                    },
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn parse_workflows(s: &str) -> Vec<Workflow<Arc<str>>> {
+    s.lines().map(Workflow::from).collect()
+}
+
+fn workflow_name_to_idx(s: &str) -> HashMap<Arc<str>, usize> {
     s.lines()
         .map(Workflow::from)
-        .map(|wf| (wf.name.clone(), wf))
+        .enumerate()
+        .map(|(idx, wf)| (wf.name, idx))
         .collect()
 }
 
@@ -216,47 +270,60 @@ fn parse_parts(s: &str) -> Vec<Part> {
     s.lines().map(Part::from).collect()
 }
 
-fn parse_input(s: &str) -> (WorkflowMap, Vec<Part>) {
+fn parse_input(s: &str) -> Input {
     let (workflows, parts) = s.split_once("\n\n").unwrap();
-    (parse_workflows(workflows), parse_parts(parts))
+    let name_map = workflow_name_to_idx(workflows);
+    let workflows = parse_workflows(workflows);
+    let starting_workflow = *name_map.get("in").unwrap();
+    let workflows = convert_to_idx(workflows, name_map);
+    let parts = parse_parts(parts);
+    Input {
+        workflows,
+        parts,
+        starting_workflow,
+    }
 }
 
-fn accept_part(workflows: &WorkflowMap, part: &Part) -> bool {
-    let mut stage = Stage::default();
-    while let Stage::Workflow(name) = &stage {
-        let workflow = workflows.get(name).unwrap();
+fn accept_part(workflows: &[Workflow<usize>], starting_index: usize, part: &Part) -> bool {
+    let mut stage = Stage::Workflow(starting_index);
+    while let Stage::Workflow(idx) = stage {
+        let workflow = &workflows[idx];
         stage = workflow.get_next_stage(part);
     }
     stage.accepted()
 }
 
 fn part1(s: &str) -> u64 {
-    let (workflows, parts) = parse_input(s);
-    parts
+    let input = parse_input(s);
+    input
+        .parts
         .iter()
-        .filter(|part| accept_part(&workflows, part))
+        .filter(|part| accept_part(&input.workflows, input.starting_workflow, part))
         .map(|part| part.total() as u64)
         .sum()
 }
 
 fn part2(s: &str) -> usize {
-    let (workflows, _) = parse_input(s);
+    let input = parse_input(s);
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let pool = ThreadPool::default();
     for x in 0..=4000 {
         let tx = tx.clone();
         let done_tx = done_tx.clone();
-        let workflows = workflows.clone();
+        let workflows = input.workflows.clone();
+        let starting_workflow = input.starting_workflow;
         pool.execute(move || {
             for m in 0..=4000 {
+                let mut accepted = 0;
                 for a in 0..=4000 {
                     for s in 0..=4000 {
-                        if accept_part(&workflows, &Part { x, m, a, s }) {
-                            tx.send(()).unwrap();
+                        if accept_part(&workflows, starting_workflow, &Part { x, m, a, s }) {
+                            accepted += 1;
                         }
                     }
                 }
+                tx.send(accepted).unwrap();
                 done_tx.send(()).unwrap();
             }
         });
@@ -271,8 +338,8 @@ fn part2(s: &str) -> usize {
     });
     thread::spawn(move || {
         let mut count = 0;
-        while let Ok(()) = rx.recv() {
-            count += 1;
+        while let Ok(accepted) = rx.recv() {
+            count += accepted;
         }
         count_tx.send(count).unwrap();
     });
