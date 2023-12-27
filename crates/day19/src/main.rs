@@ -1,4 +1,10 @@
-use std::{collections::HashMap, fs::read_to_string};
+use std::{
+    collections::HashMap,
+    fs::read_to_string,
+    sync::{mpsc, Arc},
+    thread,
+};
+use threadpool::ThreadPool;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Operator {
@@ -40,7 +46,7 @@ impl From<char> for Field {
 struct Condition {
     field: Field,
     operator: Operator,
-    value: i64,
+    value: u16,
 }
 
 impl From<&str> for Condition {
@@ -69,37 +75,26 @@ impl Condition {
             Operator::Less => field_value < self.value,
         }
     }
-
-    pub fn get_range(&self) -> Range {
-        match self.operator {
-            Operator::Greater => Range {
-                start: self.value as u16,
-                end: 4000,
-            },
-            Operator::Less => Range {
-                start: 0,
-                end: self.value as u16,
-            },
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Rule {
     condition: Option<Condition>,
-    target: String,
+    target: Stage,
 }
 
 impl From<&str> for Rule {
     fn from(value: &str) -> Self {
         if let Some((left, right)) = value.split_once(':') {
             let condition = Some(Condition::from(left));
-            let target = right.to_string();
-            Self { condition, target }
+            Self {
+                condition,
+                target: right.into(),
+            }
         } else {
             Self {
                 condition: None,
-                target: value.to_string(),
+                target: value.into(),
             }
         }
     }
@@ -115,54 +110,13 @@ impl Rule {
     }
 
     pub fn get_stage(&self) -> Stage {
-        match self.target.as_str() {
-            "A" => Stage::Accept,
-            "R" => Stage::Reject,
-            _ => Stage::Workflow(self.target.clone()),
-        }
+        self.target.clone()
     }
-
-    pub fn get_accept_range(&self, workflows: &HashMap<String, Workflow>) -> Option<AcceptsRange> {
-        todo!()
-    }
-
-    pub fn get_condition_range(&self) -> Option<Range> {
-        self.condition.as_ref().map(Condition::get_range)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-struct Range {
-    start: u16,
-    end: u16,
-}
-
-impl Default for Range {
-    fn default() -> Self {
-        Self {
-            start: 0,
-            end: 4000,
-        }
-    }
-}
-
-impl Range {
-    pub fn size(&self) -> u16 {
-        self.end - self.start + 1
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
-struct AcceptsRange {
-    x: Vec<Range>,
-    m: Vec<Range>,
-    a: Vec<Range>,
-    s: Vec<Range>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Workflow {
-    name: String,
+    name: Arc<str>,
     rules: Vec<Rule>,
 }
 
@@ -172,7 +126,7 @@ impl From<&str> for Workflow {
         let rules = &rules[0..rules.len() - 1];
         let rules = rules.split(',').map(Rule::from).collect();
         Self {
-            name: name.to_string(),
+            name: name.into(),
             rules,
         }
     }
@@ -186,24 +140,16 @@ impl Workflow {
             .unwrap()
             .get_stage()
     }
-
-    pub fn get_accepted_ranges(
-        &self,
-        workflows: &HashMap<String, Workflow>,
-    ) -> Option<AcceptsRange> {
-        for rule in self.rules.iter() {
-            let rule_range = rule.get_accept_range(workflows);
-        }
-        todo!()
-    }
 }
+
+type WorkflowMap = HashMap<Arc<str>, Workflow>;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 struct Part {
-    x: i64,
-    m: i64,
-    a: i64,
-    s: i64,
+    x: u16,
+    m: u16,
+    a: u16,
+    s: u16,
 }
 
 impl From<&str> for Part {
@@ -225,7 +171,7 @@ impl From<&str> for Part {
 }
 
 impl Part {
-    pub fn total(&self) -> i64 {
+    pub fn total(&self) -> u16 {
         self.x + self.m + self.a + self.s
     }
 }
@@ -234,7 +180,17 @@ impl Part {
 enum Stage {
     Accept,
     Reject,
-    Workflow(String),
+    Workflow(Arc<str>),
+}
+
+impl From<&str> for Stage {
+    fn from(value: &str) -> Self {
+        match value {
+            "A" => Self::Accept,
+            "R" => Self::Reject,
+            _ => Self::Workflow(value.into()),
+        }
+    }
 }
 
 impl Default for Stage {
@@ -249,7 +205,7 @@ impl Stage {
     }
 }
 
-fn parse_workflows(s: &str) -> HashMap<String, Workflow> {
+fn parse_workflows(s: &str) -> WorkflowMap {
     s.lines()
         .map(Workflow::from)
         .map(|wf| (wf.name.clone(), wf))
@@ -260,12 +216,12 @@ fn parse_parts(s: &str) -> Vec<Part> {
     s.lines().map(Part::from).collect()
 }
 
-fn parse_input(s: &str) -> (HashMap<String, Workflow>, Vec<Part>) {
+fn parse_input(s: &str) -> (WorkflowMap, Vec<Part>) {
     let (workflows, parts) = s.split_once("\n\n").unwrap();
     (parse_workflows(workflows), parse_parts(parts))
 }
 
-fn accept_part(workflows: &HashMap<String, Workflow>, part: &Part) -> bool {
+fn accept_part(workflows: &WorkflowMap, part: &Part) -> bool {
     let mut stage = Stage::default();
     while let Stage::Workflow(name) = &stage {
         let workflow = workflows.get(name).unwrap();
@@ -274,17 +230,53 @@ fn accept_part(workflows: &HashMap<String, Workflow>, part: &Part) -> bool {
     stage.accepted()
 }
 
-fn part1(s: &str) -> i64 {
+fn part1(s: &str) -> u64 {
     let (workflows, parts) = parse_input(s);
     parts
         .iter()
         .filter(|part| accept_part(&workflows, part))
-        .map(Part::total)
+        .map(|part| part.total() as u64)
         .sum()
 }
 
 fn part2(s: &str) -> usize {
-    todo!()
+    let (workflows, _) = parse_input(s);
+    let (tx, rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let pool = ThreadPool::default();
+    for x in 0..=4000 {
+        let tx = tx.clone();
+        let done_tx = done_tx.clone();
+        let workflows = workflows.clone();
+        pool.execute(move || {
+            for m in 0..=4000 {
+                for a in 0..=4000 {
+                    for s in 0..=4000 {
+                        if accept_part(&workflows, &Part { x, m, a, s }) {
+                            tx.send(()).unwrap();
+                        }
+                    }
+                }
+                done_tx.send(()).unwrap();
+            }
+        });
+    }
+    let (count_tx, count_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut done = 0;
+        while let Ok(()) = done_rx.recv() {
+            done += 1;
+            println!("{} / 16000000", done);
+        }
+    });
+    thread::spawn(move || {
+        let mut count = 0;
+        while let Ok(()) = rx.recv() {
+            count += 1;
+        }
+        count_tx.send(count).unwrap();
+    });
+    count_rx.recv().unwrap()
 }
 
 fn main() {
@@ -322,10 +314,8 @@ hdj{m>838:A,pv}
         assert_eq!(part1(TEST_INPUT), 19114);
     }
 
-    /*
     #[test]
     fn test_part2() {
         assert_eq!(part2(TEST_INPUT), 952408144115);
     }
-    */
 }
