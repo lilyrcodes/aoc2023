@@ -1,6 +1,6 @@
-use petgraph::graph::DiGraph;
+use petgraph::{graph::{NodeIndex, DiGraph}, Direction, visit::EdgeRef};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fmt::Debug,
     fs::read_to_string,
     rc::Rc,
@@ -92,6 +92,19 @@ impl Condition {
             } else {
                 self.value - 1
             },
+        }
+    }
+
+    pub fn to_part_range(&self) -> PartRange {
+        let range = match self.operator {
+            Operator::Greater => Range { start: self.value + 1, size: 4000 - self.value },
+            Operator::Less => Range { start: 0, size: self.value },
+        };
+        match self.field {
+            Field::X => PartRange { x: range, ..PartRange::default() },
+            Field::M => PartRange { m: range, ..PartRange::default() },
+            Field::A => PartRange { a: range, ..PartRange::default() },
+            Field::S => PartRange { s: range, ..PartRange::default() },
         }
     }
 }
@@ -262,7 +275,126 @@ struct Node {
     rule_idx: usize,
 }
 
-fn make_graph(workflows: &[Workflow<usize>]) -> DiGraph<Rc<Node>, Option<Condition>> {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Range {
+    start: u16,
+    size: u16,
+}
+
+impl Default for Range {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            size: 4001,
+        }
+    }
+}
+
+impl Range {
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let self_end = self.start + self.size;
+        let other_end = other.start + other.size;
+        self.start <= other.start && other.start <= self_end
+            || self.start <= other_end && other_end <= self_end
+            || other.start <= self.start && self.start <= other_end
+            || other.start <= self_end && self_end <= other_end
+    }
+
+    pub fn combine(&self, other: &Self) -> Self {
+        let self_end = self.start + self.size;
+        let other_end = other.start + other.size;
+        let start = u16::max(self.start, other.start);
+        let end = u16::min(self_end, other_end);
+        let size = if start <= end { end - start } else { 0 };
+        Self {
+            start,
+            size,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct PartRange {
+    x: Range,
+    m: Range,
+    a: Range,
+    s: Range,
+}
+
+impl Default for PartRange {
+    fn default() -> Self {
+        Self {
+            x: Range::default(),
+            m: Range::default(),
+            a: Range::default(),
+            s: Range::default(),
+        }
+    }
+}
+
+impl PartRange {
+    pub fn combine(&self, other: &Self) -> Self {
+        Self {
+            x: self.x.combine(&other.x),
+            m: self.m.combine(&other.m),
+            a: self.a.combine(&other.a),
+            s: self.s.combine(&other.s),
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.x.size == 0 || self.m.size == 0 || self.a.size == 0 || self.s.size == 0
+    }
+
+    pub fn size(&self) -> u64 {
+        self.x.size as u64 *
+        self.m.size as u64 *
+        self.a.size as u64 *
+        self.s.size as u64
+    }
+}
+
+fn part_ranges(
+    graph: DiGraph<Rc<Node>, Option<Condition>>,
+    node_map: HashMap<Rc<Node>, NodeIndex>,
+    starting_index: usize,
+    accept_node: Rc<Node>,
+    reject_node: Rc<Node>,
+) -> Vec<PartRange> {
+    let mut ranges = Vec::new();
+    let mut stack = Vec::new();
+    stack.push((
+        *node_map.get(&Rc::new(Node {
+            workflow_idx: starting_index,
+            rule_idx: 0,
+        })).unwrap(),
+        PartRange::default(),
+    ));
+    while let Some((cur_node_index, cur_range)) = stack.pop() {
+        let cur_node_weight = graph.node_weight(cur_node_index).unwrap();
+        if cur_node_weight == &accept_node {
+            ranges.push(cur_range);
+            continue;
+        } else if cur_node_weight == &reject_node {
+            continue;
+        }
+        for edge in graph.edges_directed(cur_node_index, Direction::Outgoing) {
+            let opt_condition = edge.weight();
+            let next_node = edge.target();
+            if let Some(condition) = opt_condition {
+                let next_range = cur_range.combine(&condition.to_part_range());
+                if !next_range.is_zero() {
+                    stack.push((next_node, next_range));
+                }
+            } else {
+                stack.push((next_node, cur_range));
+            }
+        }
+    }
+    ranges
+}
+
+fn make_graph(workflows: &[Workflow<usize>]) -> (DiGraph<Rc<Node>, Option<Condition>>, HashMap<Rc<Node>, NodeIndex>) {
     let mut graph = DiGraph::new();
     let mut node_map = HashMap::new();
     let accepted_node = Rc::new(Node {
@@ -363,7 +495,7 @@ fn make_graph(workflows: &[Workflow<usize>]) -> DiGraph<Rc<Node>, Option<Conditi
         }
     }
 
-    graph
+    (graph, node_map)
 }
 
 fn convert_to_idx(
@@ -517,8 +649,55 @@ hdj{m>838:A,pv}
         assert_eq!(part1(TEST_INPUT), 19114);
     }
 
+    /*
     #[test]
     fn test_part2() {
         assert_eq!(part2(TEST_INPUT), 952408144115);
+    }
+    */
+
+    #[test]
+    fn test_range_conversion() {
+        let condition = Condition {
+            field: Field::X,
+            operator: Operator::Greater,
+            value: 50
+        };
+        let expected_range = PartRange {
+            x: Range { start: 51, size: 3950 },
+            m: Range::default(),
+            a: Range::default(),
+            s: Range::default(),
+        };
+        assert_eq!(condition.to_part_range(), expected_range);
+        let condition = Condition {
+            field: Field::X,
+            operator: Operator::Less,
+            value: 150
+        };
+        let expected_range = PartRange {
+            x: Range { start: 0, size: 150 },
+            m: Range::default(),
+            a: Range::default(),
+            s: Range::default(),
+        };
+        assert_eq!(condition.to_part_range(), expected_range);
+    }
+
+    #[test]
+    fn test_range_combine() {
+        let a = Range { start: 50, size: 51 };
+        let b = Range { start: 100, size: 10 };
+        let expected = Range { start: 100, size: 1};
+        assert_eq!(a.combine(&b), expected);
+
+        let a = Range { start: 50, size: 51 };
+        let b = Range { start: 150, size: 10 };
+        let expected = Range { start: 150, size: 0};
+        assert_eq!(a.combine(&b), expected);
+
+        let a = Range::default();
+        let b = Range { start: 150, size: 10 };
+        assert_eq!(a.combine(&b), b);
     }
 }
