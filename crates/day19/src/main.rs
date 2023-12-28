@@ -1,7 +1,9 @@
+use petgraph::graph::DiGraph;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::Debug,
     fs::read_to_string,
+    rc::Rc,
     sync::{mpsc, Arc},
     thread,
 };
@@ -76,6 +78,22 @@ impl Condition {
             Operator::Less => field_value < self.value,
         }
     }
+
+    pub fn invert(&self) -> Self {
+        Self {
+            field: self.field,
+            operator: if self.operator == Operator::Greater {
+                Operator::Less
+            } else {
+                Operator::Greater
+            },
+            value: if self.operator == Operator::Greater {
+                self.value + 1
+            } else {
+                self.value - 1
+            },
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -118,6 +136,10 @@ where
 
     pub fn get_stage(&self) -> Stage<T> {
         self.target.clone()
+    }
+
+    pub fn leaf_node(&self) -> bool {
+        self.condition.is_none() && self.target.leaf_node()
     }
 }
 
@@ -222,12 +244,126 @@ where
     pub fn accepted(&self) -> bool {
         *self == Self::Accept
     }
+
+    pub fn leaf_node(&self) -> bool {
+        *self == Self::Accept || *self == Self::Reject
+    }
 }
 
 struct Input {
     workflows: Vec<Workflow<usize>>,
     parts: Vec<Part>,
     starting_workflow: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Node {
+    workflow_idx: usize,
+    rule_idx: usize,
+}
+
+fn make_graph(workflows: &[Workflow<usize>]) -> DiGraph<Rc<Node>, Option<Condition>> {
+    let mut graph = DiGraph::new();
+    let mut node_map = HashMap::new();
+    let accepted_node = Rc::new(Node {
+        workflow_idx: usize::MAX,
+        rule_idx: usize::MAX,
+    });
+    let rejected_node = Rc::new(Node {
+        workflow_idx: usize::MAX,
+        rule_idx: usize::MAX - 1,
+    });
+    node_map.insert(accepted_node.clone(), graph.add_node(accepted_node.clone()));
+    node_map.insert(rejected_node.clone(), graph.add_node(rejected_node.clone()));
+    for (workflow_idx, workflow) in workflows.iter().enumerate() {
+        for (rule_idx, rule) in workflow.rules.iter().enumerate() {
+            if rule.leaf_node() {
+                continue;
+            }
+            let node = Node {
+                workflow_idx,
+                rule_idx,
+            };
+            node_map.insert(node.into(), graph.add_node(node.into()));
+        }
+    }
+    for (workflow_idx, workflow) in workflows.iter().enumerate() {
+        for (rule_idx, rule) in workflow.rules.iter().enumerate() {
+            let start_node = Node {
+                workflow_idx,
+                rule_idx,
+            };
+            if let Some(condition) = rule.condition {
+                match rule.target {
+                    Stage::Workflow(workflow_idx) => {
+                        let left_node = Node {
+                            workflow_idx,
+                            rule_idx: 0,
+                        };
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&left_node).unwrap(),
+                            Some(condition),
+                        );
+                    }
+                    Stage::Accept => {
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&accepted_node).unwrap(),
+                            Some(condition),
+                        );
+                    }
+                    Stage::Reject => {
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&rejected_node).unwrap(),
+                            Some(condition),
+                        );
+                    }
+                }
+                graph.add_edge(
+                    *node_map.get(&start_node).unwrap(),
+                    *node_map
+                        .get(&Rc::new(Node {
+                            workflow_idx,
+                            rule_idx: rule_idx + 1,
+                        }))
+                        .unwrap(),
+                    Some(condition.invert()),
+                );
+            } else {
+                match rule.target {
+                    Stage::Workflow(workflow_idx) => {
+                        let left_node = Node {
+                            workflow_idx,
+                            rule_idx: 0,
+                        };
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&left_node).unwrap(),
+                            None,
+                        );
+                    }
+                    Stage::Accept => {
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&accepted_node).unwrap(),
+                            None,
+                        );
+                    }
+                    Stage::Reject => {
+                        graph.add_edge(
+                            *node_map.get(&start_node).unwrap(),
+                            *node_map.get(&rejected_node).unwrap(),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    graph
 }
 
 fn convert_to_idx(
