@@ -1,4 +1,8 @@
-use petgraph::{graph::{NodeIndex, DiGraph}, Direction, visit::EdgeRef};
+use petgraph::{
+    graph::{DiGraph, NodeIndex},
+    visit::EdgeRef,
+    Direction,
+};
 use std::{
     collections::HashMap,
     fmt::Debug,
@@ -97,14 +101,32 @@ impl Condition {
 
     pub fn to_part_range(&self) -> PartRange {
         let range = match self.operator {
-            Operator::Greater => Range { start: self.value + 1, size: 4000 - self.value },
-            Operator::Less => Range { start: 0, size: self.value },
+            Operator::Greater => Range {
+                start: self.value + 1,
+                size: 4000 - self.value,
+            },
+            Operator::Less => Range {
+                start: 0,
+                size: self.value,
+            },
         };
         match self.field {
-            Field::X => PartRange { x: range, ..PartRange::default() },
-            Field::M => PartRange { m: range, ..PartRange::default() },
-            Field::A => PartRange { a: range, ..PartRange::default() },
-            Field::S => PartRange { s: range, ..PartRange::default() },
+            Field::X => PartRange {
+                x: range,
+                ..PartRange::default()
+            },
+            Field::M => PartRange {
+                m: range,
+                ..PartRange::default()
+            },
+            Field::A => PartRange {
+                a: range,
+                ..PartRange::default()
+            },
+            Field::S => PartRange {
+                s: range,
+                ..PartRange::default()
+            },
         }
     }
 }
@@ -300,36 +322,26 @@ impl Range {
             || other.start <= self_end && self_end <= other_end
     }
 
+    pub fn contains(&self, num: u16) -> bool {
+        self.start <= num && num <= self.start + self.size
+    }
+
     pub fn combine(&self, other: &Self) -> Self {
         let self_end = self.start + self.size;
         let other_end = other.start + other.size;
         let start = u16::max(self.start, other.start);
         let end = u16::min(self_end, other_end);
         let size = if start <= end { end - start } else { 0 };
-        Self {
-            start,
-            size,
-        }
+        Self { start, size }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 struct PartRange {
     x: Range,
     m: Range,
     a: Range,
     s: Range,
-}
-
-impl Default for PartRange {
-    fn default() -> Self {
-        Self {
-            x: Range::default(),
-            m: Range::default(),
-            a: Range::default(),
-            s: Range::default(),
-        }
-    }
 }
 
 impl PartRange {
@@ -346,11 +358,15 @@ impl PartRange {
         self.x.size == 0 || self.m.size == 0 || self.a.size == 0 || self.s.size == 0
     }
 
-    pub fn size(&self) -> u64 {
-        self.x.size as u64 *
-        self.m.size as u64 *
-        self.a.size as u64 *
-        self.s.size as u64
+    pub fn size(&self) -> usize {
+        self.x.size as usize * self.m.size as usize * self.a.size as usize * self.s.size as usize
+    }
+
+    pub fn contains(&self, part: &Part) -> bool {
+        self.x.contains(part.x)
+            && self.m.contains(part.m)
+            && self.a.contains(part.a)
+            && self.s.contains(part.s)
     }
 }
 
@@ -364,10 +380,12 @@ fn part_ranges(
     let mut ranges = Vec::new();
     let mut stack = Vec::new();
     stack.push((
-        *node_map.get(&Rc::new(Node {
-            workflow_idx: starting_index,
-            rule_idx: 0,
-        })).unwrap(),
+        *node_map
+            .get(&Rc::new(Node {
+                workflow_idx: starting_index,
+                rule_idx: 0,
+            }))
+            .unwrap(),
         PartRange::default(),
     ));
     while let Some((cur_node_index, cur_range)) = stack.pop() {
@@ -394,7 +412,14 @@ fn part_ranges(
     ranges
 }
 
-fn make_graph(workflows: &[Workflow<usize>]) -> (DiGraph<Rc<Node>, Option<Condition>>, HashMap<Rc<Node>, NodeIndex>) {
+struct GraphAndMap {
+    graph: DiGraph<Rc<Node>, Option<Condition>>,
+    node_to_index: HashMap<Rc<Node>, NodeIndex>,
+    accepted_node: Rc<Node>,
+    rejected_node: Rc<Node>,
+}
+
+fn make_graph(workflows: &[Workflow<usize>]) -> GraphAndMap {
     let mut graph = DiGraph::new();
     let mut node_map = HashMap::new();
     let accepted_node = Rc::new(Node {
@@ -453,49 +478,56 @@ fn make_graph(workflows: &[Workflow<usize>]) -> (DiGraph<Rc<Node>, Option<Condit
                         );
                     }
                 }
-                graph.add_edge(
-                    *node_map.get(&start_node).unwrap(),
-                    *node_map
-                        .get(&Rc::new(Node {
-                            workflow_idx,
-                            rule_idx: rule_idx + 1,
-                        }))
-                        .unwrap(),
-                    Some(condition.invert()),
-                );
-            } else {
-                match rule.target {
-                    Stage::Workflow(workflow_idx) => {
-                        let left_node = Node {
-                            workflow_idx,
-                            rule_idx: 0,
-                        };
+                if rule_idx + 1 < workflows[workflow_idx].rules.len() {
+                    if let Some(right_node) = node_map.get(&Rc::new(Node {
+                        workflow_idx,
+                        rule_idx: rule_idx + 1,
+                    })) {
                         graph.add_edge(
                             *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&left_node).unwrap(),
-                            None,
+                            *right_node,
+                            Some(condition.invert()),
                         );
-                    }
-                    Stage::Accept => {
-                        graph.add_edge(
-                            *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&accepted_node).unwrap(),
-                            None,
-                        );
-                    }
-                    Stage::Reject => {
-                        graph.add_edge(
-                            *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&rejected_node).unwrap(),
-                            None,
-                        );
+                    } else {
+                        match &workflows[workflow_idx].rules[rule_idx + 1].target {
+                            Stage::Accept => {
+                                graph.add_edge(
+                                    *node_map.get(&start_node).unwrap(),
+                                    *node_map.get(&accepted_node).unwrap(),
+                                    None,
+                                );
+                            }
+                            Stage::Reject => {
+                                graph.add_edge(
+                                    *node_map.get(&start_node).unwrap(),
+                                    *node_map.get(&rejected_node).unwrap(),
+                                    None,
+                                );
+                            }
+                            _ => panic!("Shouldn't be a condition here!"),
+                        }
                     }
                 }
+            } else if let Stage::Workflow(workflow_idx) = rule.target {
+                let left_node = Node {
+                    workflow_idx,
+                    rule_idx: 0,
+                };
+                graph.add_edge(
+                    *node_map.get(&start_node).unwrap(),
+                    *node_map.get(&left_node).unwrap(),
+                    None,
+                );
             }
         }
     }
 
-    (graph, node_map)
+    GraphAndMap {
+        graph,
+        node_to_index: node_map,
+        accepted_node,
+        rejected_node,
+    }
 }
 
 fn convert_to_idx(
@@ -573,20 +605,27 @@ fn part1(s: &str) -> u64 {
 
 fn part2(s: &str) -> usize {
     let input = parse_input(s);
+    let graph = make_graph(&input.workflows);
+    let ranges = part_ranges(
+        graph.graph,
+        graph.node_to_index,
+        input.starting_workflow,
+        graph.accepted_node,
+        graph.rejected_node,
+    );
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let pool = ThreadPool::default();
     for x in 0..=4000 {
         let tx = tx.clone();
         let done_tx = done_tx.clone();
-        let workflows = input.workflows.clone();
-        let starting_workflow = input.starting_workflow;
+        let ranges = ranges.clone();
         pool.execute(move || {
             for m in 0..=4000 {
                 let mut accepted = 0;
                 for a in 0..=4000 {
                     for s in 0..=4000 {
-                        if accept_part(&workflows, starting_workflow, &Part { x, m, a, s }) {
+                        if ranges.iter().any(|r| r.contains(&Part { x, m, a, s })) {
                             accepted += 1;
                         }
                     }
@@ -649,22 +688,23 @@ hdj{m>838:A,pv}
         assert_eq!(part1(TEST_INPUT), 19114);
     }
 
-    /*
     #[test]
     fn test_part2() {
         assert_eq!(part2(TEST_INPUT), 952408144115);
     }
-    */
 
     #[test]
     fn test_range_conversion() {
         let condition = Condition {
             field: Field::X,
             operator: Operator::Greater,
-            value: 50
+            value: 50,
         };
         let expected_range = PartRange {
-            x: Range { start: 51, size: 3950 },
+            x: Range {
+                start: 51,
+                size: 3950,
+            },
             m: Range::default(),
             a: Range::default(),
             s: Range::default(),
@@ -673,10 +713,13 @@ hdj{m>838:A,pv}
         let condition = Condition {
             field: Field::X,
             operator: Operator::Less,
-            value: 150
+            value: 150,
         };
         let expected_range = PartRange {
-            x: Range { start: 0, size: 150 },
+            x: Range {
+                start: 0,
+                size: 150,
+            },
             m: Range::default(),
             a: Range::default(),
             s: Range::default(),
@@ -686,18 +729,39 @@ hdj{m>838:A,pv}
 
     #[test]
     fn test_range_combine() {
-        let a = Range { start: 50, size: 51 };
-        let b = Range { start: 100, size: 10 };
-        let expected = Range { start: 100, size: 1};
+        let a = Range {
+            start: 50,
+            size: 51,
+        };
+        let b = Range {
+            start: 100,
+            size: 10,
+        };
+        let expected = Range {
+            start: 100,
+            size: 1,
+        };
         assert_eq!(a.combine(&b), expected);
 
-        let a = Range { start: 50, size: 51 };
-        let b = Range { start: 150, size: 10 };
-        let expected = Range { start: 150, size: 0};
+        let a = Range {
+            start: 50,
+            size: 51,
+        };
+        let b = Range {
+            start: 150,
+            size: 10,
+        };
+        let expected = Range {
+            start: 150,
+            size: 0,
+        };
         assert_eq!(a.combine(&b), expected);
 
         let a = Range::default();
-        let b = Range { start: 150, size: 10 };
+        let b = Range {
+            start: 150,
+            size: 10,
+        };
         assert_eq!(a.combine(&b), b);
     }
 }
