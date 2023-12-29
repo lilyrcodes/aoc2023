@@ -619,27 +619,31 @@ fn part2(s: &str) -> usize {
     for x in 0..=4000 {
         let tx = tx.clone();
         let done_tx = done_tx.clone();
-        let ranges = ranges.clone();
+        let ranges = ranges.iter().filter(|r| r.x.contains(x)).copied().collect::<Vec<_>>();
         pool.execute(move || {
+            let mut accepted = 0;
             for m in 0..=4000 {
-                let mut accepted = 0;
+                let ranges = ranges.iter().filter(|r| r.m.contains(m)).collect::<Vec<_>>();
                 for a in 0..=4000 {
+                    let ranges = ranges.iter().filter(|r| r.a.contains(a)).collect::<Vec<_>>();
                     for s in 0..=4000 {
-                        if ranges.iter().any(|r| r.contains(&Part { x, m, a, s })) {
+                        if ranges.iter().any(|r| r.s.contains(s)) {
                             accepted += 1;
                         }
                     }
                 }
-                tx.send(accepted).unwrap();
-                done_tx.send(()).unwrap();
+                if m % 100 == 99 {
+                    done_tx.send(()).unwrap();
+                }
             }
+            tx.send(accepted).unwrap();
         });
     }
     let (count_tx, count_rx) = mpsc::channel();
     thread::spawn(move || {
         let mut done = 0;
         while let Ok(()) = done_rx.recv() {
-            done += 1;
+            done += 100;
             println!("{} / 16000000", done);
         }
     });
