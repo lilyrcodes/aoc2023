@@ -8,10 +8,8 @@ use std::{
     fmt::Debug,
     fs::read_to_string,
     rc::Rc,
-    sync::{mpsc, Arc},
-    thread,
+    sync::Arc,
 };
-use threadpool::ThreadPool;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum Operator {
@@ -99,17 +97,21 @@ impl Condition {
         }
     }
 
-    pub fn to_part_range(&self) -> PartRange {
-        let range = match self.operator {
+    pub fn to_range(&self) -> Range {
+        match self.operator {
             Operator::Greater => Range {
                 start: self.value + 1,
                 size: 4000 - self.value,
             },
             Operator::Less => Range {
-                start: 0,
-                size: self.value,
+                start: 1,
+                size: self.value - 1,
             },
-        };
+        }
+    }
+
+    pub fn to_part_range(&self) -> PartRange {
+        let range = self.to_range();
         match self.field {
             Field::X => PartRange {
                 x: range,
@@ -172,10 +174,6 @@ where
     pub fn get_stage(&self) -> Stage<T> {
         self.target.clone()
     }
-
-    pub fn leaf_node(&self) -> bool {
-        self.condition.is_none() && self.target.leaf_node()
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -211,8 +209,6 @@ where
             .get_stage()
     }
 }
-
-type WorkflowMap = HashMap<Arc<str>, Workflow<Arc<str>>>;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
 struct Part {
@@ -279,10 +275,6 @@ where
     pub fn accepted(&self) -> bool {
         *self == Self::Accept
     }
-
-    pub fn leaf_node(&self) -> bool {
-        *self == Self::Accept || *self == Self::Reject
-    }
 }
 
 struct Input {
@@ -291,13 +283,13 @@ struct Input {
     starting_workflow: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 struct Node {
     workflow_idx: usize,
     rule_idx: usize,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 struct Range {
     start: u16,
     size: u16,
@@ -306,31 +298,20 @@ struct Range {
 impl Default for Range {
     fn default() -> Self {
         Self {
-            start: 0,
-            size: 4001,
+            start: 1,
+            size: 4000,
         }
     }
 }
 
 impl Range {
-    pub fn overlaps(&self, other: &Self) -> bool {
-        let self_end = self.start + self.size;
-        let other_end = other.start + other.size;
-        self.start <= other.start && other.start <= self_end
-            || self.start <= other_end && other_end <= self_end
-            || other.start <= self.start && self.start <= other_end
-            || other.start <= self_end && self_end <= other_end
+    pub fn end(&self) -> u16 {
+        self.start + self.size
     }
 
-    pub fn contains(&self, num: u16) -> bool {
-        self.start <= num && num <= self.start + self.size
-    }
-
-    pub fn combine(&self, other: &Self) -> Self {
-        let self_end = self.start + self.size;
-        let other_end = other.start + other.size;
+    pub fn overlap(&self, other: &Self) -> Self {
         let start = u16::max(self.start, other.start);
-        let end = u16::min(self_end, other_end);
+        let end = u16::min(self.end(), other.end());
         let size = if start <= end { end - start } else { 0 };
         Self { start, size }
     }
@@ -345,12 +326,12 @@ struct PartRange {
 }
 
 impl PartRange {
-    pub fn combine(&self, other: &Self) -> Self {
+    pub fn overlap(&self, other: &Self) -> Self {
         Self {
-            x: self.x.combine(&other.x),
-            m: self.m.combine(&other.m),
-            a: self.a.combine(&other.a),
-            s: self.s.combine(&other.s),
+            x: self.x.overlap(&other.x),
+            m: self.m.overlap(&other.m),
+            a: self.a.overlap(&other.a),
+            s: self.s.overlap(&other.s),
         }
     }
 
@@ -361,22 +342,16 @@ impl PartRange {
     pub fn size(&self) -> usize {
         self.x.size as usize * self.m.size as usize * self.a.size as usize * self.s.size as usize
     }
-
-    pub fn contains(&self, part: &Part) -> bool {
-        self.x.contains(part.x)
-            && self.m.contains(part.m)
-            && self.a.contains(part.a)
-            && self.s.contains(part.s)
-    }
 }
 
 fn part_ranges(
-    graph: DiGraph<Rc<Node>, Option<Condition>>,
-    node_map: HashMap<Rc<Node>, NodeIndex>,
+    graph_and_map: GraphAndMap,
     starting_index: usize,
-    accept_node: Rc<Node>,
-    reject_node: Rc<Node>,
 ) -> Vec<PartRange> {
+    let graph: DiGraph<Rc<Node>, Option<Condition>> = graph_and_map.graph;
+    let node_map: HashMap<Rc<Node>, NodeIndex> = graph_and_map.node_to_index;
+    let accept_node: Rc<Node> = graph_and_map.accepted_node;
+    let reject_node: Rc<Node> = graph_and_map.rejected_node;
     let mut ranges = Vec::new();
     let mut stack = Vec::new();
     stack.push((
@@ -390,17 +365,17 @@ fn part_ranges(
     ));
     while let Some((cur_node_index, cur_range)) = stack.pop() {
         let cur_node_weight = graph.node_weight(cur_node_index).unwrap();
-        if cur_node_weight == &accept_node {
+        if cur_node_weight.clone() == accept_node {
             ranges.push(cur_range);
             continue;
-        } else if cur_node_weight == &reject_node {
+        } else if cur_node_weight.clone() == reject_node {
             continue;
         }
         for edge in graph.edges_directed(cur_node_index, Direction::Outgoing) {
             let opt_condition = edge.weight();
             let next_node = edge.target();
             if let Some(condition) = opt_condition {
-                let next_range = cur_range.combine(&condition.to_part_range());
+                let next_range = cur_range.overlap(&condition.to_part_range());
                 if !next_range.is_zero() {
                     stack.push((next_node, next_range));
                 }
@@ -412,6 +387,7 @@ fn part_ranges(
     ranges
 }
 
+#[derive(Debug)]
 struct GraphAndMap {
     graph: DiGraph<Rc<Node>, Option<Condition>>,
     node_to_index: HashMap<Rc<Node>, NodeIndex>,
@@ -433,10 +409,7 @@ fn make_graph(workflows: &[Workflow<usize>]) -> GraphAndMap {
     node_map.insert(accepted_node.clone(), graph.add_node(accepted_node.clone()));
     node_map.insert(rejected_node.clone(), graph.add_node(rejected_node.clone()));
     for (workflow_idx, workflow) in workflows.iter().enumerate() {
-        for (rule_idx, rule) in workflow.rules.iter().enumerate() {
-            if rule.leaf_node() {
-                continue;
-            }
+        for (rule_idx, _) in workflow.rules.iter().enumerate() {
             let node = Node {
                 workflow_idx,
                 rule_idx,
@@ -450,34 +423,34 @@ fn make_graph(workflows: &[Workflow<usize>]) -> GraphAndMap {
                 workflow_idx,
                 rule_idx,
             };
-            if let Some(condition) = rule.condition {
-                match rule.target {
-                    Stage::Workflow(workflow_idx) => {
-                        let left_node = Node {
-                            workflow_idx,
-                            rule_idx: 0,
-                        };
-                        graph.add_edge(
-                            *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&left_node).unwrap(),
-                            Some(condition),
-                        );
-                    }
-                    Stage::Accept => {
-                        graph.add_edge(
-                            *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&accepted_node).unwrap(),
-                            Some(condition),
-                        );
-                    }
-                    Stage::Reject => {
-                        graph.add_edge(
-                            *node_map.get(&start_node).unwrap(),
-                            *node_map.get(&rejected_node).unwrap(),
-                            Some(condition),
-                        );
-                    }
+            match rule.target {
+                Stage::Workflow(workflow_idx) => {
+                    let next_node = Node {
+                        workflow_idx,
+                        rule_idx: 0,
+                    };
+                    graph.add_edge(
+                        *node_map.get(&start_node).unwrap(),
+                        *node_map.get(&next_node).unwrap(),
+                        rule.condition,
+                    );
                 }
+                Stage::Accept => {
+                    graph.add_edge(
+                        *node_map.get(&start_node).unwrap(),
+                        *node_map.get(&accepted_node).unwrap(),
+                        rule.condition,
+                    );
+                }
+                Stage::Reject => {
+                    graph.add_edge(
+                        *node_map.get(&start_node).unwrap(),
+                        *node_map.get(&rejected_node).unwrap(),
+                        rule.condition,
+                    );
+                }
+            }
+            if let Some(condition) = rule.condition {
                 if rule_idx + 1 < workflows[workflow_idx].rules.len() {
                     if let Some(right_node) = node_map.get(&Rc::new(Node {
                         workflow_idx,
@@ -488,36 +461,8 @@ fn make_graph(workflows: &[Workflow<usize>]) -> GraphAndMap {
                             *right_node,
                             Some(condition.invert()),
                         );
-                    } else {
-                        match &workflows[workflow_idx].rules[rule_idx + 1].target {
-                            Stage::Accept => {
-                                graph.add_edge(
-                                    *node_map.get(&start_node).unwrap(),
-                                    *node_map.get(&accepted_node).unwrap(),
-                                    None,
-                                );
-                            }
-                            Stage::Reject => {
-                                graph.add_edge(
-                                    *node_map.get(&start_node).unwrap(),
-                                    *node_map.get(&rejected_node).unwrap(),
-                                    None,
-                                );
-                            }
-                            _ => panic!("Shouldn't be a condition here!"),
-                        }
                     }
                 }
-            } else if let Stage::Workflow(workflow_idx) = rule.target {
-                let left_node = Node {
-                    workflow_idx,
-                    rule_idx: 0,
-                };
-                graph.add_edge(
-                    *node_map.get(&start_node).unwrap(),
-                    *node_map.get(&left_node).unwrap(),
-                    None,
-                );
             }
         }
     }
@@ -607,54 +552,11 @@ fn part2(s: &str) -> usize {
     let input = parse_input(s);
     let graph = make_graph(&input.workflows);
     let ranges = part_ranges(
-        graph.graph,
-        graph.node_to_index,
+        graph,
         input.starting_workflow,
-        graph.accepted_node,
-        graph.rejected_node,
     );
-    let (tx, rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
-    let pool = ThreadPool::default();
-    for x in 0..=4000 {
-        let tx = tx.clone();
-        let done_tx = done_tx.clone();
-        let ranges = ranges.iter().filter(|r| r.x.contains(x)).copied().collect::<Vec<_>>();
-        pool.execute(move || {
-            let mut accepted = 0;
-            for m in 0..=4000 {
-                let ranges = ranges.iter().filter(|r| r.m.contains(m)).collect::<Vec<_>>();
-                for a in 0..=4000 {
-                    let ranges = ranges.iter().filter(|r| r.a.contains(a)).collect::<Vec<_>>();
-                    for s in 0..=4000 {
-                        if ranges.iter().any(|r| r.s.contains(s)) {
-                            accepted += 1;
-                        }
-                    }
-                }
-                if m % 100 == 99 {
-                    done_tx.send(()).unwrap();
-                }
-            }
-            tx.send(accepted).unwrap();
-        });
-    }
-    let (count_tx, count_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut done = 0;
-        while let Ok(()) = done_rx.recv() {
-            done += 100;
-            println!("{} / 16000000", done);
-        }
-    });
-    thread::spawn(move || {
-        let mut count = 0;
-        while let Ok(accepted) = rx.recv() {
-            count += accepted;
-        }
-        count_tx.send(count).unwrap();
-    });
-    count_rx.recv().unwrap()
+
+    ranges.iter().map(|range| range.size()).sum()
 }
 
 fn main() {
@@ -694,7 +596,79 @@ hdj{m>838:A,pv}
 
     #[test]
     fn test_part2() {
-        assert_eq!(part2(TEST_INPUT), 952408144115);
+        assert_eq!(part2(TEST_INPUT), 167409079868000);
+    }
+
+    #[test]
+    fn test_part2_basic() {
+        assert_eq!(part2("in{x<2001:A,R}
+
+{x=1,m=1,a=1,s=1}"), 2000 * 4000 * 4000 * 4000);
+        assert_eq!(part2("in{x<2001:A,A}
+
+{x=1,m=1,a=1,s=1}"), 4000 * 4000 * 4000 * 4000);
+        
+        assert_eq!(part2("in{x<2001:A,b}
+b{m>2000:A,R}
+
+{x=1,m=1,a=1,s=1}"), 2000 * 4000 * 4000 * 4000 + 2000 * 2000 * 4000 * 4000);
+    }
+
+    #[test]
+    fn test_part2_basic2() {
+    }
+
+    #[test]
+    fn test_make_graph() {
+        let start_node = Rc::new(Node { workflow_idx: 0, rule_idx: 0 });
+        let accepted_node = Rc::new(Node {
+            workflow_idx: usize::MAX,
+            rule_idx: usize::MAX,
+        });
+        let rejected_node = Rc::new(Node {
+            workflow_idx: usize::MAX,
+            rule_idx: usize::MAX - 1,
+        });
+        let mut expected = DiGraph::new();
+        let accepted_node = expected.add_node(accepted_node.clone());
+        expected.add_node(rejected_node.clone());
+        let start_node = expected.add_node(start_node.clone());
+        let other_node = expected.add_node(Rc::new(Node { workflow_idx: 0, rule_idx: 1 }));
+        expected.add_edge(start_node, accepted_node, Some(Condition { field: Field::X, operator: Operator::Less, value: 2001 }));
+        expected.add_edge(start_node, other_node, Some(Condition { field: Field::X, operator: Operator::Greater, value: 2000 }));
+        expected.add_edge(other_node, accepted_node, None);
+        
+        let input = parse_input("in{x<2001:A,A}
+
+{x=1,m=1,a=1,s=1}");
+        let graph = make_graph(&input.workflows);
+        assert_eq!(graph.graph.node_weights().cloned().collect::<Vec<_>>(), expected.node_weights().cloned().collect::<Vec<_>>());
+        assert_eq!(graph.graph.edge_weights().cloned().collect::<Vec<_>>(), expected.edge_weights().cloned().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_part_ranges() {
+        let input = parse_input("in{x<2001:A,A}
+
+{x=1,m=1,a=1,s=1}");
+        let graph = make_graph(&input.workflows);
+        let ranges = part_ranges(
+            graph,
+            input.starting_workflow,
+        );
+        let expected_ranges = vec![
+            PartRange { x: Range { start: 1, size: 2000 }, ..PartRange::default() },
+            PartRange { x: Range { start: 2001, size: 2000 }, ..PartRange::default() },
+        ];
+        assert_eq!(ranges, expected_ranges);
+    }
+
+    #[test]
+    fn test_invert_condition() {
+        let condition = Condition { field: Field::X, operator: Operator::Greater, value: 2000 };
+        let expected = Condition { field: Field::X, operator: Operator::Less, value: 2001 };
+        assert_eq!(condition.invert(), expected);
+        assert_eq!(expected.invert(), condition);
     }
 
     #[test]
@@ -721,8 +695,8 @@ hdj{m>838:A,pv}
         };
         let expected_range = PartRange {
             x: Range {
-                start: 0,
-                size: 150,
+                start: 1,
+                size: 149,
             },
             m: Range::default(),
             a: Range::default(),
@@ -732,7 +706,7 @@ hdj{m>838:A,pv}
     }
 
     #[test]
-    fn test_range_combine() {
+    fn test_range_overlap() {
         let a = Range {
             start: 50,
             size: 51,
@@ -745,7 +719,7 @@ hdj{m>838:A,pv}
             start: 100,
             size: 1,
         };
-        assert_eq!(a.combine(&b), expected);
+        assert_eq!(a.overlap(&b), expected);
 
         let a = Range {
             start: 50,
@@ -759,13 +733,13 @@ hdj{m>838:A,pv}
             start: 150,
             size: 0,
         };
-        assert_eq!(a.combine(&b), expected);
+        assert_eq!(a.overlap(&b), expected);
 
         let a = Range::default();
         let b = Range {
             start: 150,
             size: 10,
         };
-        assert_eq!(a.combine(&b), b);
+        assert_eq!(a.overlap(&b), b);
     }
 }
